@@ -1,0 +1,102 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+INSTALL_DIR="/opt/basis-system"
+STACKS_DIR="/opt/stacks"
+
+echo "Erstelle Verzeichnisse unter $INSTALL_DIR und $STACKS_DIR..."
+mkdir -p "$INSTALL_DIR"/{dockge-data,portainer-data,cosmos-data}
+mkdir -p "$STACKS_DIR"
+cd "$INSTALL_DIR"
+
+echo "Erstelle docker-compose.yml..."
+cat > docker-compose.yml << 'EOF'
+name: basis-system
+
+services:
+  # 1. Der sichere Docker-Socket-Proxy (Read-Only)
+  dockerproxy:
+    image: tecnativa/docker-socket-proxy:latest
+    container_name: dockerproxy
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    environment:
+      - CONTAINERS=1
+      - IMAGES=1
+      - INFO=1
+      - NETWORKS=1
+      - VOLUMES=1
+      - EVENTS=1
+      - POST=0
+      - PUT=0
+      - DELETE=0
+      - EXEC=0
+    ports:
+      - "2375:2375"
+
+  # 2. Dockhand (Test mit Proxy)
+  dockhand:
+    image: fnsys/dockhand:latest
+    container_name: dockhand
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - DOCKER_HOST=tcp://dockerproxy:2375
+    depends_on:
+      - dockerproxy
+
+  # 3. Dockge (Fokus auf docker-compose.yml)
+  dockge:
+    image: louislam/dockge:latest
+    container_name: dockge
+    restart: unless-stopped
+    ports:
+      - "5001:5001"
+    volumes:
+      # Dockge braucht Schreibzugriff, um Container zu starten
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Hier speichert Dockge seine eigenen Daten
+      - ./dockge-data:/app/data
+      # Hier legt Dockge die fertigen Compose-Ordner an
+      - /opt/stacks:/opt/stacks
+    environment:
+      - DOCKGE_STACKS_DIR=/opt/stacks
+
+  # 4. Portainer (Enterprise Standard)
+  portainer:
+    image: portainer/portainer-ce:latest
+    container_name: portainer
+    restart: unless-stopped
+    ports:
+      - "9000:9000"
+      - "9443:9443"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./portainer-data:/data
+
+  # 5. Cosmos Server (Zero-Trust)
+  cosmos:
+    image: azukaar/cosmos-server:latest
+    container_name: cosmos
+    restart: unless-stopped
+    ports:
+      - "5080:80"   # Umgebogen, damit Port 80 frei bleibt
+      - "5443:443"  # Umgebogen, damit Port 443 frei bleibt
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./cosmos-data:/config
+    # Cosmos Server braucht spezielle Host-Rechte für seine Firewall-Funktionen
+    privileged: true
+EOF
+
+echo "Starte alle Container..."
+docker compose up -d
+
+echo "=== Installation abgeschlossen ==="
+echo "Du erreichst die Test-Oberflächen nun unter:"
+echo "Dockhand:  http://<LXC-IP>:3000"
+echo "Dockge:    http://<LXC-IP>:5001"
+echo "Portainer: http://<LXC-IP>:9000 (oder https auf 9443)"
+echo "Cosmos:    http://<LXC-IP>:5080 (oder https auf 5443)"
